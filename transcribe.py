@@ -38,6 +38,13 @@ KNOWN_NAME_CORRECTIONS = [
     {"from": "Tear", "to": "Teare"},
     {"from": "Raddus", "to": "Radice"},
 ]
+KNOWN_NAMES = [
+    "Steve Gillmor",
+    "Brent Leary",
+    "Keith Teare",
+    "Frank Radice",
+    "Tina Chase",
+]
 DEFAULT_NAMING_MODELS = {
     "openai": "gpt-5.1",
     "anthropic": "claude-opus-5",
@@ -280,6 +287,7 @@ def parse_naming_response(data: dict) -> tuple[dict[str, str], list[dict]]:
         if corr["from"].strip() and corr["from"] != corr["to"]:
             pattern = re.compile(r"\b" + re.escape(corr["from"]) + r"\b", re.IGNORECASE)
             names = {k: pattern.sub(corr["to"], v) for k, v in names.items()}
+    names = {k: normalize_known_name_artifacts(v) for k, v in names.items()}
     return names, corrections
 
 
@@ -308,6 +316,29 @@ def apply_corrections(segments: list[dict], corrections: list[dict]) -> None:
         pattern = re.compile(r"\b" + re.escape(corr["from"]) + r"\b", re.IGNORECASE)
         for seg in segments:
             seg["text"] = pattern.sub(corr["to"], seg["text"])
+            seg["text"] = normalize_known_name_artifacts(seg["text"])
+
+
+def normalize_known_name_artifacts(text: str) -> str:
+    """Collapse correction artifacts like 'Keith Teare Teare'."""
+    import re
+
+    for name in KNOWN_NAMES:
+        parts = name.split()
+        if len(parts) < 2:
+            continue
+        last = parts[-1]
+        full_then_last = re.compile(
+            r"\b" + re.escape(name) + r"\s+" + re.escape(last) + r"\b",
+            re.IGNORECASE,
+        )
+        repeated_full = re.compile(
+            r"\b" + re.escape(name) + r"\s+" + re.escape(name) + r"\b",
+            re.IGNORECASE,
+        )
+        text = full_then_last.sub(name, text)
+        text = repeated_full.sub(name, text)
+    return text
 
 
 def write_outputs(segments: list[dict], names: dict[str, str], out_dir: Path, source: str) -> None:
