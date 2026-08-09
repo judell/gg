@@ -133,6 +133,16 @@ export ANTHROPIC_API_KEY=sk-ant-...
 uv run transcribe.py gg.mp4 --duration 180 --naming-provider anthropic
 ```
 
+For better speaker naming, pass a known roster and override the naming model
+when needed:
+
+```sh
+uv run transcribe.py gg.mp4 --duration 600 --num-speakers 5 \
+  --name-candidates "Steve Gillmor, Brent Leary, Keith Teare, Frank Radice, Tina Chase"
+
+uv run transcribe.py gg.mp4 --duration 600 --naming-model gpt-5.1
+```
+
 ## Run
 
 ```sh
@@ -160,6 +170,8 @@ that, runs start immediately. Outputs land next to the input:
 | `--num-speakers N` | Tell the diarizer exactly how many speakers to find |
 | `--skip-naming` | Skip the naming pass (no OpenAI or Anthropic API key needed) |
 | `--naming-provider openai\|anthropic` | Choose the naming API provider (default `openai`) |
+| `--naming-model MODEL` | Override the naming model (defaults: `gpt-5.1` for OpenAI, `claude-opus-5` for Anthropic) |
+| `--name-candidates NAMES` | Comma-separated likely speaker names to guide naming without forcing mappings |
 | `--output-dir DIR` | Write outputs somewhere other than next to the input |
 | `--start S` | Start the clip at S seconds |
 | `--duration S` | Only process S seconds of audio |

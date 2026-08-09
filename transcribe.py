@@ -38,6 +38,10 @@ KNOWN_NAME_CORRECTIONS = [
     {"from": "Tear", "to": "Teare"},
     {"from": "Raddus", "to": "Radice"},
 ]
+DEFAULT_NAMING_MODELS = {
+    "openai": "gpt-5.1",
+    "anthropic": "claude-opus-5",
+}
 
 
 def extract_audio(input_path: Path, wav_path: Path, start: float, duration: float | None) -> None:
@@ -99,7 +103,15 @@ def assign_speakers(segments: list[dict], turns: list[dict]) -> None:
         seg["speaker"] = max(overlaps, key=overlaps.get) if overlaps else "UNKNOWN"
 
 
-def build_naming_request(segments: list[dict]) -> tuple[list[str], dict, str, str]:
+def parse_name_candidates(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [name.strip() for name in value.split(",") if name.strip()]
+
+
+def build_naming_request(
+    segments: list[dict], name_candidates: list[str]
+) -> tuple[list[str], dict, str, str]:
     labels = sorted({s["speaker"] for s in segments if s["speaker"] != "UNKNOWN"})
     sample_lines = []
     total = 0
@@ -155,6 +167,14 @@ def build_naming_request(segments: list[dict]) -> tuple[list[str], dict, str, st
         "known corrections when they appear: Gilmore -> Gillmor, Teer/Tear -> "
         "Teare, and Raddus -> Radice."
     )
+    if name_candidates:
+        instructions += (
+            " The likely speaker roster is: "
+            + ", ".join(name_candidates)
+            + ". Use these names as candidates for spelling and disambiguation, "
+            "but only map a candidate to a diarization label when the transcript "
+            "provides supporting evidence."
+        )
     prompt = (
         "Map each diarization label to the speaker's real name where the "
         "conversation reveals it. For labels with no evidence, set "
@@ -170,13 +190,15 @@ def build_naming_request(segments: list[dict]) -> tuple[list[str], dict, str, st
     return labels, schema, instructions, prompt
 
 
-def infer_names_openai(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
+def infer_names_openai(
+    segments: list[dict], model: str, name_candidates: list[str]
+) -> tuple[dict[str, str], list[dict]]:
     """Ask OpenAI to map SPEAKER_XX labels and flag misspelled names."""
     import os
 
     from openai import OpenAI
 
-    labels, schema, instructions, prompt = build_naming_request(segments)
+    labels, schema, instructions, prompt = build_naming_request(segments, name_candidates)
     if not labels:
         return {}, []
     if not os.environ.get("OPENAI_API_KEY"):
@@ -184,7 +206,7 @@ def infer_names_openai(segments: list[dict]) -> tuple[dict[str, str], list[dict]
 
     client = OpenAI()
     response = client.responses.create(
-        model="gpt-5.1",
+        model=model,
         max_output_tokens=16000,
         instructions=instructions,
         input=prompt,
@@ -203,13 +225,15 @@ def infer_names_openai(segments: list[dict]) -> tuple[dict[str, str], list[dict]
     return parse_naming_response(json.loads(response.output_text))
 
 
-def infer_names_anthropic(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
+def infer_names_anthropic(
+    segments: list[dict], model: str, name_candidates: list[str]
+) -> tuple[dict[str, str], list[dict]]:
     """Ask Anthropic to map SPEAKER_XX labels and flag misspelled names."""
     import os
 
     import anthropic
 
-    labels, schema, instructions, prompt = build_naming_request(segments)
+    labels, schema, instructions, prompt = build_naming_request(segments, name_candidates)
     if not labels:
         return {}, []
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -217,7 +241,7 @@ def infer_names_anthropic(segments: list[dict]) -> tuple[dict[str, str], list[di
 
     client = anthropic.Anthropic()
     response = client.messages.create(
-        model="claude-opus-5",
+        model=model,
         max_tokens=16000,
         system=(
             instructions
@@ -233,10 +257,12 @@ def infer_names_anthropic(segments: list[dict]) -> tuple[dict[str, str], list[di
     return parse_naming_response(json.loads(text))
 
 
-def infer_names(segments: list[dict], provider: str) -> tuple[dict[str, str], list[dict]]:
+def infer_names(
+    segments: list[dict], provider: str, model: str, name_candidates: list[str]
+) -> tuple[dict[str, str], list[dict]]:
     if provider == "anthropic":
-        return infer_names_anthropic(segments)
-    return infer_names_openai(segments)
+        return infer_names_anthropic(segments, model, name_candidates)
+    return infer_names_openai(segments, model, name_candidates)
 
 
 def parse_naming_response(data: dict) -> tuple[dict[str, str], list[dict]]:
@@ -327,6 +353,16 @@ def main() -> None:
         default="openai",
         help="API provider for speaker naming (default: openai)",
     )
+    parser.add_argument(
+        "--naming-model",
+        default=None,
+        help="model for the selected naming provider (defaults by provider)",
+    )
+    parser.add_argument(
+        "--name-candidates",
+        default=None,
+        help="comma-separated likely speaker names for the naming pass",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--start", type=float, default=0.0, help="clip start (seconds)")
     parser.add_argument("--duration", type=float, default=None, help="clip length (seconds)")
@@ -362,9 +398,13 @@ def main() -> None:
 
     names: dict[str, str] = {}
     if not args.skip_naming:
-        print(f"Inferring speaker names with {args.naming_provider}...")
+        naming_model = args.naming_model or DEFAULT_NAMING_MODELS[args.naming_provider]
+        name_candidates = parse_name_candidates(args.name_candidates)
+        print(f"Inferring speaker names with {args.naming_provider} ({naming_model})...")
         try:
-            names, corrections = infer_names(segments, args.naming_provider)
+            names, corrections = infer_names(
+                segments, args.naming_provider, naming_model, name_candidates
+            )
             print(f"  identified: {names}" if names else "  no confident identifications")
             if corrections:
                 fixes = ", ".join(f"{c['from']}→{c['to']}" for c in corrections)
