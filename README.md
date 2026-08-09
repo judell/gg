@@ -145,6 +145,11 @@ uv run transcribe.py gg.mp4 --duration 600 --naming-model gpt-5.1
 
 ## Run
 
+The examples assume a local `gg.mp4` in the repo root. In this workspace,
+`gg.mp4` was downloaded with `yt-dlp`; the current copy is about 375 MB
+(358 MiB on disk) and is intentionally untracked. You can use a larger
+original/local recording instead if it has a better audio track.
+
 ```sh
 # Quick test: first two minutes
 uv run transcribe.py gg.mp4 --duration 120
