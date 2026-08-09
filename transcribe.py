@@ -4,6 +4,7 @@
 #     "mlx-whisper",
 #     "pyannote.audio>=4.0",
 #     "anthropic",
+#     "openai",
 #     "python-dotenv",
 # ]
 # ///
@@ -14,7 +15,7 @@ Pipeline:
   2. mlx-whisper transcribes (Apple Silicon optimized)
   3. pyannote/speaker-diarization-community-1 labels who spoke when
   4. Segments are aligned to speakers by maximal time overlap
-  5. Claude infers real speaker names from conversational context
+  5. OpenAI or Anthropic infers real speaker names from conversational context
   6. Writes transcript.json and transcript.md next to the input
 
 Usage:
@@ -29,6 +30,14 @@ import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+KNOWN_NAME_CORRECTIONS = [
+    {"from": "Gilmore", "to": "Gillmor"},
+    {"from": "Teer", "to": "Teare"},
+    {"from": "Tear", "to": "Teare"},
+    {"from": "Raddus", "to": "Radice"},
+]
 
 
 def extract_audio(input_path: Path, wav_path: Path, start: float, duration: float | None) -> None:
@@ -90,15 +99,8 @@ def assign_speakers(segments: list[dict], turns: list[dict]) -> None:
         seg["speaker"] = max(overlaps, key=overlaps.get) if overlaps else "UNKNOWN"
 
 
-def infer_names(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
-    """Ask Claude to map SPEAKER_XX labels to real names using conversational context,
-    and to flag misspelled names in the transcript text itself."""
-    import anthropic
-
+def build_naming_request(segments: list[dict]) -> tuple[list[str], dict, str, str]:
     labels = sorted({s["speaker"] for s in segments if s["speaker"] != "UNKNOWN"})
-    if not labels:
-        return {}, []
-
     sample_lines = []
     total = 0
     for seg in segments:
@@ -109,7 +111,6 @@ def infer_names(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
         sample_lines.append(line)
     sample = "\n".join(sample_lines)
 
-    client = anthropic.Anthropic()
     schema = {
         "type": "object",
         "properties": {
@@ -143,41 +144,102 @@ def infer_names(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
         "required": ["mappings", "corrections"],
         "additionalProperties": False,
     }
+    instructions = (
+        "You identify speakers in diarized transcripts. Use self-introductions, "
+        "being addressed by name, and other conversational context. Only mark a "
+        "mapping confident when the transcript itself supports it. When a speaker "
+        "is a publicly known person, use the correct real-world spelling of their "
+        "name rather than the transcript's phonetic spelling, and if the "
+        "transcript misspells a name you map, also emit the corresponding "
+        "correction pair, so mappings and corrections agree. Preserve these "
+        "known corrections when they appear: Gilmore -> Gillmor, Teer/Tear -> "
+        "Teare, and Raddus -> Radice."
+    )
+    prompt = (
+        "Map each diarization label to the speaker's real name where the "
+        "conversation reveals it. For labels with no evidence, set "
+        'confident=false and name="".\n\n'
+        "Also list corrections for misspelled proper names in the "
+        "transcript text (speaker names, the show's name, and similar - "
+        "phonetic mis-transcriptions like 'Teer' for 'Teare'). Each "
+        "correction is a {from, to} pair where 'from' is the exact "
+        "misspelling as it appears and 'to' is the correct spelling. "
+        "Only include corrections you are certain about; never correct "
+        "ordinary words.\n\n" + sample
+    )
+    return labels, schema, instructions, prompt
+
+
+def infer_names_openai(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
+    """Ask OpenAI to map SPEAKER_XX labels and flag misspelled names."""
+    import os
+
+    from openai import OpenAI
+
+    labels, schema, instructions, prompt = build_naming_request(segments)
+    if not labels:
+        return {}, []
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY not found (checked .env and environment)")
+
+    client = OpenAI()
+    response = client.responses.create(
+        model="gpt-5-mini",
+        max_output_tokens=16000,
+        instructions=instructions,
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "speaker_naming",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    )
+    if not response.output_text:
+        print("OpenAI returned no naming output; keeping generic labels.", file=sys.stderr)
+        return {}, []
+    return parse_naming_response(json.loads(response.output_text))
+
+
+def infer_names_anthropic(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
+    """Ask Anthropic to map SPEAKER_XX labels and flag misspelled names."""
+    import os
+
+    import anthropic
+
+    labels, schema, instructions, prompt = build_naming_request(segments)
+    if not labels:
+        return {}, []
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY not found (checked .env and environment)")
+
+    client = anthropic.Anthropic()
     response = client.messages.create(
         model="claude-opus-5",
         max_tokens=16000,
         system=(
-            "You identify speakers in diarized transcripts. Use self-introductions, "
-            "being addressed by name, and other conversational context. Only mark a "
-            "mapping confident when the transcript itself supports it. When a speaker "
-            "is a publicly known person, use the correct real-world spelling of their "
-            "name rather than the transcript's phonetic spelling — and if the "
-            "transcript misspells a name you map, also emit the corresponding "
-            "correction pair, so mappings and corrections agree."
+            instructions
+            + "\nReturn only JSON matching this JSON Schema, with no Markdown fences:\n"
+            + json.dumps(schema)
         ),
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Map each diarization label to the speaker's real name where the "
-                    "conversation reveals it. For labels with no evidence, set "
-                    'confident=false and name="".\n\n'
-                    "Also list corrections for misspelled proper names in the "
-                    "transcript text (speaker names, the show's name, and similar — "
-                    "phonetic mis-transcriptions like 'Teer' for 'Teare'). Each "
-                    "correction is a {from, to} pair where 'from' is the exact "
-                    "misspelling as it appears and 'to' is the correct spelling. "
-                    "Only include corrections you are certain about; never correct "
-                    "ordinary words.\n\n" + sample
-                ),
-            }
-        ],
-        output_config={"format": {"type": "json_schema", "schema": schema}},
+        messages=[{"role": "user", "content": prompt}],
     )
-    if response.stop_reason == "refusal":
-        print("Claude declined the naming request; keeping generic labels.", file=sys.stderr)
+    text = next((block.text for block in response.content if block.type == "text"), "")
+    if not text.strip():
+        print("Anthropic returned no naming output; keeping generic labels.", file=sys.stderr)
         return {}, []
-    data = json.loads(next(b.text for b in response.content if b.type == "text"))
+    return parse_naming_response(json.loads(text))
+
+
+def infer_names(segments: list[dict], provider: str) -> tuple[dict[str, str], list[dict]]:
+    if provider == "anthropic":
+        return infer_names_anthropic(segments)
+    return infer_names_openai(segments)
+
+
+def parse_naming_response(data: dict) -> tuple[dict[str, str], list[dict]]:
     names = {
         m["label"]: m["name"]
         for m in data["mappings"]
@@ -187,11 +249,27 @@ def infer_names(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
     # corrections fix "Gilmore"→"Gillmor", apply that to the names too)
     import re
 
-    for corr in data["corrections"]:
+    corrections = merge_corrections(KNOWN_NAME_CORRECTIONS, data["corrections"])
+    for corr in corrections:
         if corr["from"].strip() and corr["from"] != corr["to"]:
             pattern = re.compile(r"\b" + re.escape(corr["from"]) + r"\b", re.IGNORECASE)
             names = {k: pattern.sub(corr["to"], v) for k, v in names.items()}
-    return names, data["corrections"]
+    return names, corrections
+
+
+def merge_corrections(*correction_lists: list[dict]) -> list[dict]:
+    """Merge correction pairs, keeping first occurrence of each source spelling."""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for corrections in correction_lists:
+        for corr in corrections:
+            source = corr["from"].strip()
+            target = corr["to"].strip()
+            if not source or not target or source.casefold() in seen:
+                continue
+            seen.add(source.casefold())
+            merged.append({"from": source, "to": target})
+    return merged
 
 
 def apply_corrections(segments: list[dict], corrections: list[dict]) -> None:
@@ -242,7 +320,13 @@ def main() -> None:
     parser.add_argument("input", type=Path)
     parser.add_argument("--model", default="mlx-community/whisper-large-v3-turbo")
     parser.add_argument("--num-speakers", type=int, default=None)
-    parser.add_argument("--skip-naming", action="store_true", help="skip the Claude naming pass")
+    parser.add_argument("--skip-naming", action="store_true", help="skip the naming pass")
+    parser.add_argument(
+        "--naming-provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="API provider for speaker naming (default: openai)",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--start", type=float, default=0.0, help="clip start (seconds)")
     parser.add_argument("--duration", type=float, default=None, help="clip length (seconds)")
@@ -278,9 +362,9 @@ def main() -> None:
 
     names: dict[str, str] = {}
     if not args.skip_naming:
-        print("Inferring speaker names with Claude...")
+        print(f"Inferring speaker names with {args.naming_provider}...")
         try:
-            names, corrections = infer_names(segments)
+            names, corrections = infer_names(segments, args.naming_provider)
             print(f"  identified: {names}" if names else "  no confident identifications")
             if corrections:
                 fixes = ", ".join(f"{c['from']}→{c['to']}" for c in corrections)

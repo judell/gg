@@ -2,8 +2,8 @@
 
 Transcription with speaker identification for `gg.mp4`. The pipeline runs
 locally on Apple Silicon: `mlx-whisper` transcribes, `pyannote` figures out
-who spoke when, and the Claude API replaces `SPEAKER_00`-style labels with
-real names inferred from the conversation.
+who spoke when, and an OpenAI or Anthropic naming pass replaces
+`SPEAKER_00`-style labels with real names inferred from the conversation.
 
 ## How the pipeline works
 
@@ -51,21 +51,23 @@ match exactly, so maximal-overlap is the standard heuristic). Consecutive
 segments from the same speaker are later merged into readable turns in the
 Markdown output.
 
-### 5. Speaker naming and spelling repair — Claude
+### 5. Speaker naming and spelling repair — OpenAI or Anthropic
 
 The one non-local, optional stage (`--skip-naming` omits it). A sample of
-the labeled transcript goes to the Claude API, which does two things:
+the labeled transcript goes to the selected naming provider, which does two things:
 
 - **Names the speakers** from conversational evidence — self-introductions,
   people addressing each other ("okay Tina let's go"), host introductions
   ("From the Duchy of Palo Alto is Keith Teare"). Only confidently
   identified labels are renamed; the rest stay `SPEAKER_NN`.
 - **Repairs name spellings** in the transcript text. Whisper spells names
-  phonetically ("Gilmore", "Teer", "Raddus"); Claude returns
+  phonetically ("Gilmore", "Teer", "Raddus"); the naming provider returns
   `{from, to}` correction pairs for proper names it is certain about, and
   the script applies them as case-insensitive whole-word replacements
-  across the full transcript. Nothing is hard-coded — the corrections are
-  inferred fresh from each recording.
+  across the full transcript. The script also seeds the known Gillmor Gang
+  corrections from the original Claude pass (`Gillmor`, `Teare`, `Radice`)
+  so those names are fixed consistently before any extra corrections inferred
+  fresh from each recording.
 
 ## Setup
 
@@ -98,17 +100,37 @@ echo HF_TOKEN=hf_your_token_here > .env
 No quotes around the value — a stray quote becomes part of the token and
 Hugging Face will reject it with a 401. (`.env` is gitignored.)
 
-### 4. Set your Anthropic API key
+### 4. Get and set a naming API key
 
-The speaker-naming pass calls the Claude API. Either export it:
+The speaker-naming pass defaults to OpenAI. To create an OpenAI key:
+
+1. Sign in or create an account at [platform.openai.com](https://platform.openai.com).
+2. Open [API keys](https://platform.openai.com/api-keys).
+3. Click **Create new secret key** and copy it once; OpenAI will not show
+   the full secret again.
+
+Then either export it:
+
+```sh
+export OPENAI_API_KEY=sk-...
+```
+
+or add a second line to `.env`:
+
+```sh
+OPENAI_API_KEY=sk-...
+```
+
+To skip this entirely, run
+with `--skip-naming` — you'll get `SPEAKER_00`-style labels instead of names.
+
+Anthropic is also supported if you have a Claude API key. Export it or add it
+to `.env`:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
+uv run transcribe.py gg.mp4 --duration 180 --naming-provider anthropic
 ```
-
-or add a second line to `.env` (`ANTHROPIC_API_KEY=sk-ant-...`). Get a key at
-[platform.claude.com](https://platform.claude.com). To skip this entirely, run
-with `--skip-naming` — you'll get `SPEAKER_00`-style labels instead of names.
 
 ## Run
 
@@ -135,7 +157,8 @@ that, runs start immediately. Outputs land next to the input:
 |---|---|
 | `--model` | mlx-whisper model repo (default `mlx-community/whisper-large-v3-turbo`) |
 | `--num-speakers N` | Tell the diarizer exactly how many speakers to find |
-| `--skip-naming` | Skip the Claude naming pass (no API key needed) |
+| `--skip-naming` | Skip the naming pass (no OpenAI or Anthropic API key needed) |
+| `--naming-provider openai\|anthropic` | Choose the naming API provider (default `openai`) |
 | `--output-dir DIR` | Write outputs somewhere other than next to the input |
 | `--start S` | Start the clip at S seconds |
 | `--duration S` | Only process S seconds of audio |
