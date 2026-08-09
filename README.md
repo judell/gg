@@ -102,7 +102,8 @@ Hugging Face will reject it with a 401. (`.env` is gitignored.)
 
 ### 4. Get and set a naming API key
 
-The speaker-naming pass defaults to OpenAI. To create an OpenAI key:
+The speaker-naming pass defaults to OpenAI with `gpt-5.1` for better
+speaker-name inference. To create an OpenAI key:
 
 1. Sign in or create an account at [platform.openai.com](https://platform.openai.com).
 2. Open [API keys](https://platform.openai.com/api-keys).

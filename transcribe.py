@@ -184,7 +184,7 @@ def infer_names_openai(segments: list[dict]) -> tuple[dict[str, str], list[dict]
 
     client = OpenAI()
     response = client.responses.create(
-        model="gpt-5-mini",
+        model="gpt-5.1",
         max_output_tokens=16000,
         instructions=instructions,
         input=prompt,
