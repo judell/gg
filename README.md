@@ -1,1 +1,141 @@
 # gg
+
+Transcription with speaker identification for `gg.mp4`. The pipeline runs
+locally on Apple Silicon: `mlx-whisper` transcribes, `pyannote` figures out
+who spoke when, and the Claude API replaces `SPEAKER_00`-style labels with
+real names inferred from the conversation.
+
+## How the pipeline works
+
+`transcribe.py` chains five stages. The first four run entirely on your
+machine; only the last one (optional) calls an external API.
+
+### 1. Audio extraction — ffmpeg
+
+The video's audio track (48 kHz stereo Opus) is decoded to a temporary
+16 kHz mono WAV file, the input format both models expect. `--start` and
+`--duration` clip here, so a partial run never decodes more than it needs.
+
+### 2. Transcription — mlx-whisper
+
+[mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
+is Whisper (OpenAI's speech-recognition model) running on
+[MLX](https://github.com/ml-explore/mlx), Apple's array framework for
+Apple Silicon, so inference runs on the Mac's GPU. The default model,
+`whisper-large-v3-turbo`, is a distilled large-v3 — near large-v3 accuracy
+at several times the speed. Output is a list of segments, each with text
+and start/end timestamps. Two settings curb Whisper's classic
+repetition-hallucination failure mode (`condition_on_previous_text=False`,
+`hallucination_silence_threshold`).
+
+Whisper transcribes *what* was said, but has no concept of *who* said it —
+that's the next stage.
+
+### 3. Diarization — pyannote
+
+[pyannote.audio](https://github.com/pyannote/pyannote-audio) answers "who
+spoke when." The
+[speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+pipeline detects speech regions, computes a voice embedding (a numeric
+fingerprint of each voice), and clusters the embeddings so each distinct
+voice becomes a speaker. Output is a list of turns like *SPEAKER_02 spoke
+from 12.4 s to 19.1 s*. It doesn't know names — labels are arbitrary. The
+model is gated on Hugging Face, which is why setup requires a token and
+accepting its terms. Runs on the GPU via MPS when available.
+
+### 4. Alignment
+
+Pure Python, no models: each Whisper segment is assigned the speaker whose
+diarization turns overlap it the most (segment and turn boundaries never
+match exactly, so maximal-overlap is the standard heuristic). Consecutive
+segments from the same speaker are later merged into readable turns in the
+Markdown output.
+
+### 5. Speaker naming and spelling repair — Claude
+
+The one non-local, optional stage (`--skip-naming` omits it). A sample of
+the labeled transcript goes to the Claude API, which does two things:
+
+- **Names the speakers** from conversational evidence — self-introductions,
+  people addressing each other ("okay Tina let's go"), host introductions
+  ("From the Duchy of Palo Alto is Keith Teare"). Only confidently
+  identified labels are renamed; the rest stay `SPEAKER_NN`.
+- **Repairs name spellings** in the transcript text. Whisper spells names
+  phonetically ("Gilmore", "Teer", "Raddus"); Claude returns
+  `{from, to}` correction pairs for proper names it is certain about, and
+  the script applies them as case-insensitive whole-word replacements
+  across the full transcript. Nothing is hard-coded — the corrections are
+  inferred fresh from each recording.
+
+## Setup
+
+### 1. Install system tools
+
+```sh
+brew install ffmpeg uv
+```
+
+(`uv` manages the script's Python environment automatically — no venv or
+`pip install` needed.)
+
+### 2. Get a Hugging Face token (for the diarization model)
+
+1. Create an account at [huggingface.co](https://huggingface.co) if needed.
+2. Visit [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+   and accept the model's user conditions (a short form).
+3. Create an access token at [Settings → Access Tokens](https://huggingface.co/settings/tokens).
+   A fine-grained token works; make sure it includes
+   **"Read access to contents of all public gated repos you can access."**
+
+### 3. Create `.env`
+
+In the repo root:
+
+```sh
+echo HF_TOKEN=hf_your_token_here > .env
+```
+
+No quotes around the value — a stray quote becomes part of the token and
+Hugging Face will reject it with a 401. (`.env` is gitignored.)
+
+### 4. Set your Anthropic API key
+
+The speaker-naming pass calls the Claude API. Either export it:
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+or add a second line to `.env` (`ANTHROPIC_API_KEY=sk-ant-...`). Get a key at
+[platform.claude.com](https://platform.claude.com). To skip this entirely, run
+with `--skip-naming` — you'll get `SPEAKER_00`-style labels instead of names.
+
+## Run
+
+```sh
+# Quick test: first two minutes
+uv run transcribe.py gg.mp4 --duration 120
+
+# First five minutes
+uv run transcribe.py gg.mp4 --duration 300
+
+# Full file
+uv run transcribe.py gg.mp4
+```
+
+The first run downloads the Python dependencies and models (a few GB); after
+that, runs start immediately. Outputs land next to the input:
+
+- `transcript.json` — segments with start/end times, speaker labels, and names
+- `transcript.md` — readable transcript with `**Name** [hh:mm:ss]:` turns
+
+## Options
+
+| Flag | Meaning |
+|---|---|
+| `--model` | mlx-whisper model repo (default `mlx-community/whisper-large-v3-turbo`) |
+| `--num-speakers N` | Tell the diarizer exactly how many speakers to find |
+| `--skip-naming` | Skip the Claude naming pass (no API key needed) |
+| `--output-dir DIR` | Write outputs somewhere other than next to the input |
+| `--start S` | Start the clip at S seconds |
+| `--duration S` | Only process S seconds of audio |

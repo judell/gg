@@ -1,0 +1,6 @@
+.env
+transcript.json
+transcript.md
+*.wav
+__pycache__/
+.venv/

@@ -1,0 +1,297 @@
+# /// script
+# requires-python = ">=3.12,<3.13"
+# dependencies = [
+#     "mlx-whisper",
+#     "pyannote.audio>=4.0",
+#     "anthropic",
+#     "python-dotenv",
+# ]
+# ///
+"""Transcribe a video/audio file with speaker identification.
+
+Pipeline:
+  1. ffmpeg extracts 16 kHz mono WAV (optionally clipped via --start/--duration)
+  2. mlx-whisper transcribes (Apple Silicon optimized)
+  3. pyannote/speaker-diarization-community-1 labels who spoke when
+  4. Segments are aligned to speakers by maximal time overlap
+  5. Claude infers real speaker names from conversational context
+  6. Writes transcript.json and transcript.md next to the input
+
+Usage:
+  uv run transcribe.py gg.mp4 --duration 120
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+def extract_audio(input_path: Path, wav_path: Path, start: float, duration: float | None) -> None:
+    cmd = ["ffmpeg", "-y", "-v", "error", "-ss", str(start), "-i", str(input_path)]
+    if duration is not None:
+        cmd += ["-t", str(duration)]
+    cmd += ["-ac", "1", "-ar", "16000", "-vn", str(wav_path)]
+    subprocess.run(cmd, check=True)
+
+
+def transcribe(wav_path: Path, model: str) -> list[dict]:
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        str(wav_path),
+        path_or_hf_repo=model,
+        word_timestamps=True,
+        verbose=False,  # False (not None) enables the tqdm progress bar
+        # curb repetition hallucinations on disfluent/silent stretches
+        condition_on_previous_text=False,
+        hallucination_silence_threshold=2.0,
+    )
+    return [
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+        for seg in result["segments"]
+        if seg["text"].strip()
+    ]
+
+
+def diarize(wav_path: Path, hf_token: str, num_speakers: int | None):
+    import torch
+    from pyannote.audio import Pipeline
+    from pyannote.audio.pipelines.utils.hook import ProgressHook
+
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-community-1", token=hf_token
+    )
+    if torch.backends.mps.is_available():
+        pipeline.to(torch.device("mps"))
+    kwargs = {"num_speakers": num_speakers} if num_speakers else {}
+    with ProgressHook() as hook:
+        result = pipeline(str(wav_path), hook=hook, **kwargs)
+    # pyannote 4.x community pipelines wrap the Annotation; older ones return it directly
+    annotation = getattr(result, "speaker_diarization", result)
+    return [
+        {"start": turn.start, "end": turn.end, "speaker": speaker}
+        for turn, _, speaker in annotation.itertracks(yield_label=True)
+    ]
+
+
+def assign_speakers(segments: list[dict], turns: list[dict]) -> None:
+    """Label each transcript segment with the speaker whose turns overlap it most."""
+    for seg in segments:
+        overlaps: dict[str, float] = {}
+        for turn in turns:
+            ov = min(seg["end"], turn["end"]) - max(seg["start"], turn["start"])
+            if ov > 0:
+                overlaps[turn["speaker"]] = overlaps.get(turn["speaker"], 0) + ov
+        seg["speaker"] = max(overlaps, key=overlaps.get) if overlaps else "UNKNOWN"
+
+
+def infer_names(segments: list[dict]) -> tuple[dict[str, str], list[dict]]:
+    """Ask Claude to map SPEAKER_XX labels to real names using conversational context,
+    and to flag misspelled names in the transcript text itself."""
+    import anthropic
+
+    labels = sorted({s["speaker"] for s in segments if s["speaker"] != "UNKNOWN"})
+    if not labels:
+        return {}, []
+
+    sample_lines = []
+    total = 0
+    for seg in segments:
+        line = f"[{seg['speaker']}] {seg['text']}"
+        total += len(line)
+        if total > 12000:
+            break
+        sample_lines.append(line)
+    sample = "\n".join(sample_lines)
+
+    client = anthropic.Anthropic()
+    schema = {
+        "type": "object",
+        "properties": {
+            "mappings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "enum": labels},
+                        "name": {"type": "string"},
+                        "confident": {"type": "boolean"},
+                        "evidence": {"type": "string"},
+                    },
+                    "required": ["label", "name", "confident", "evidence"],
+                    "additionalProperties": False,
+                },
+            },
+            "corrections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                    },
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["mappings", "corrections"],
+        "additionalProperties": False,
+    }
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=16000,
+        system=(
+            "You identify speakers in diarized transcripts. Use self-introductions, "
+            "being addressed by name, and other conversational context. Only mark a "
+            "mapping confident when the transcript itself supports it. When a speaker "
+            "is a publicly known person, use the correct real-world spelling of their "
+            "name rather than the transcript's phonetic spelling — and if the "
+            "transcript misspells a name you map, also emit the corresponding "
+            "correction pair, so mappings and corrections agree."
+        ),
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Map each diarization label to the speaker's real name where the "
+                    "conversation reveals it. For labels with no evidence, set "
+                    'confident=false and name="".\n\n'
+                    "Also list corrections for misspelled proper names in the "
+                    "transcript text (speaker names, the show's name, and similar — "
+                    "phonetic mis-transcriptions like 'Teer' for 'Teare'). Each "
+                    "correction is a {from, to} pair where 'from' is the exact "
+                    "misspelling as it appears and 'to' is the correct spelling. "
+                    "Only include corrections you are certain about; never correct "
+                    "ordinary words.\n\n" + sample
+                ),
+            }
+        ],
+        output_config={"format": {"type": "json_schema", "schema": schema}},
+    )
+    if response.stop_reason == "refusal":
+        print("Claude declined the naming request; keeping generic labels.", file=sys.stderr)
+        return {}, []
+    data = json.loads(next(b.text for b in response.content if b.type == "text"))
+    names = {
+        m["label"]: m["name"]
+        for m in data["mappings"]
+        if m["confident"] and m["name"].strip()
+    }
+    # keep speaker names consistent with the text corrections (e.g. if the
+    # corrections fix "Gilmore"→"Gillmor", apply that to the names too)
+    import re
+
+    for corr in data["corrections"]:
+        if corr["from"].strip() and corr["from"] != corr["to"]:
+            pattern = re.compile(r"\b" + re.escape(corr["from"]) + r"\b", re.IGNORECASE)
+            names = {k: pattern.sub(corr["to"], v) for k, v in names.items()}
+    return names, data["corrections"]
+
+
+def apply_corrections(segments: list[dict], corrections: list[dict]) -> None:
+    """Replace misspelled names in segment text, longest misspelling first."""
+    import re
+
+    for corr in sorted(corrections, key=lambda c: -len(c["from"])):
+        if not corr["from"].strip() or corr["from"] == corr["to"]:
+            continue
+        pattern = re.compile(r"\b" + re.escape(corr["from"]) + r"\b", re.IGNORECASE)
+        for seg in segments:
+            seg["text"] = pattern.sub(corr["to"], seg["text"])
+
+
+def write_outputs(segments: list[dict], names: dict[str, str], out_dir: Path, source: str) -> None:
+    for seg in segments:
+        seg["speaker_name"] = names.get(seg["speaker"], seg["speaker"])
+
+    (out_dir / "transcript.json").write_text(
+        json.dumps({"source": source, "speakers": names, "segments": segments}, indent=2)
+    )
+
+    # display names: first name only, unless two speakers share one
+    firsts = [n.split()[0] for n in names.values()]
+    display = {
+        label: (name.split()[0] if firsts.count(name.split()[0]) == 1 else name)
+        for label, name in names.items()
+    }
+
+    lines = [f"# Transcript of {source}", ""]
+    current, buf = None, []
+    def flush():
+        if buf:
+            lines.append(f"{current}: {' '.join(buf)}")
+            lines.append("")
+    for seg in segments:
+        speaker = display.get(seg["speaker"], seg["speaker"])
+        if speaker != current:
+            flush()
+            current, buf = speaker, []
+        buf.append(seg["text"])
+    flush()
+    (out_dir / "transcript.md").write_text("\n".join(lines))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Transcribe with speaker ID")
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--model", default="mlx-community/whisper-large-v3-turbo")
+    parser.add_argument("--num-speakers", type=int, default=None)
+    parser.add_argument("--skip-naming", action="store_true", help="skip the Claude naming pass")
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--start", type=float, default=0.0, help="clip start (seconds)")
+    parser.add_argument("--duration", type=float, default=None, help="clip length (seconds)")
+    args = parser.parse_args()
+
+    load_dotenv()
+    import os
+
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        sys.exit("HF_TOKEN not found (checked .env and environment). "
+                 "Create one at https://huggingface.co/settings/tokens and accept the "
+                 "terms for pyannote/speaker-diarization-community-1.")
+
+    out_dir = args.output_dir or args.input.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = Path(tmp) / "audio.wav"
+        print("Extracting audio...")
+        extract_audio(args.input, wav_path, args.start, args.duration)
+
+        print(f"Transcribing with {args.model}...")
+        segments = transcribe(wav_path, args.model)
+        print(f"  {len(segments)} segments")
+
+        print("Diarizing with pyannote/speaker-diarization-community-1...")
+        turns = diarize(wav_path, hf_token, args.num_speakers)
+        print(f"  {len(turns)} speaker turns, "
+              f"{len({t['speaker'] for t in turns})} speakers")
+
+    assign_speakers(segments, turns)
+
+    names: dict[str, str] = {}
+    if not args.skip_naming:
+        print("Inferring speaker names with Claude...")
+        try:
+            names, corrections = infer_names(segments)
+            print(f"  identified: {names}" if names else "  no confident identifications")
+            if corrections:
+                fixes = ", ".join(f"{c['from']}→{c['to']}" for c in corrections)
+                print(f"  spelling fixes: {fixes}")
+                apply_corrections(segments, corrections)
+        except Exception as e:
+            print(f"  naming pass failed ({e}); keeping generic labels", file=sys.stderr)
+
+    write_outputs(segments, names, out_dir, args.input.name)
+    print(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
+
+
+if __name__ == "__main__":
+    main()
