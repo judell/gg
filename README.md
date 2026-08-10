@@ -198,6 +198,14 @@ start the server without opening a browser:
 python3 viewer-server.py --no-open
 ```
 
+## Logs
+
+Every run — terminal or viewer-launched — writes `logs/run-<timestamp>.log`
+(gitignored): the exact command line, resolved configuration, per-stage
+timings and counts, and the naming outcome (identified speakers and spelling
+fixes, or a prominent `NAMING FAILED:` line with the reason). When a
+transcript looks wrong, start there.
+
 ## Options
 
 | Flag | Meaning |

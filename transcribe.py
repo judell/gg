@@ -27,9 +27,21 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+LOG_FILE = None
+
+
+def log(msg: str) -> None:
+    """Print to the console and append to the per-run log file."""
+    print(msg, flush=True)
+    if LOG_FILE:
+        LOG_FILE.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        LOG_FILE.flush()
 
 
 KNOWN_NAME_CORRECTIONS = [
@@ -413,19 +425,45 @@ def main() -> None:
     out_dir = args.output_dir or args.input.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    global LOG_FILE
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_path = logs_dir / time.strftime("run-%Y%m%d-%H%M%S.log")
+    LOG_FILE = log_path.open("w")
+    log(f"Run log: logs/{log_path.name}")
+    log(f"Command: {' '.join(sys.argv)}")
+    log(f"Config: model={args.model} "
+        f"naming={'skipped' if args.skip_naming else args.naming_provider} "
+        f"start={args.start} duration={args.duration or 'full'} "
+        f"num_speakers={args.num_speakers or 'auto'}")
+
+    try:
+        run_pipeline(args, hf_token, out_dir)
+    except Exception:
+        import traceback
+
+        log("RUN FAILED:\n" + traceback.format_exc())
+        sys.exit(1)
+
+
+def run_pipeline(args, hf_token: str, out_dir: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         wav_path = Path(tmp) / "audio.wav"
-        print("Extracting audio...")
+        t = time.time()
+        log("Extracting audio...")
         extract_audio(args.input, wav_path, args.start, args.duration)
+        log(f"  extracted in {time.time() - t:.1f}s")
 
-        print(f"Transcribing with {args.model}...")
+        t = time.time()
+        log(f"Transcribing with {args.model}...")
         segments = transcribe(wav_path, args.model)
-        print(f"  {len(segments)} segments")
+        log(f"  {len(segments)} segments in {time.time() - t:.1f}s")
 
-        print("Diarizing with pyannote/speaker-diarization-community-1...")
+        t = time.time()
+        log("Diarizing with pyannote/speaker-diarization-community-1...")
         turns = diarize(wav_path, hf_token, args.num_speakers)
-        print(f"  {len(turns)} speaker turns, "
-              f"{len({t['speaker'] for t in turns})} speakers")
+        log(f"  {len(turns)} speaker turns, "
+            f"{len({t['speaker'] for t in turns})} speakers in {time.time() - t:.1f}s")
 
     assign_speakers(segments, turns)
 
@@ -433,21 +471,23 @@ def main() -> None:
     if not args.skip_naming:
         naming_model = args.naming_model or DEFAULT_NAMING_MODELS[args.naming_provider]
         name_candidates = parse_name_candidates(args.name_candidates)
-        print(f"Inferring speaker names with {args.naming_provider} ({naming_model})...")
+        t = time.time()
+        log(f"Inferring speaker names with {args.naming_provider} ({naming_model})...")
         try:
             names, corrections = infer_names(
                 segments, args.naming_provider, naming_model, name_candidates
             )
-            print(f"  identified: {names}" if names else "  no confident identifications")
+            log(f"  identified: {names}" if names else "  no confident identifications")
             if corrections:
                 fixes = ", ".join(f"{c['from']}→{c['to']}" for c in corrections)
-                print(f"  spelling fixes: {fixes}")
+                log(f"  spelling fixes: {fixes}")
                 apply_corrections(segments, corrections)
+            log(f"  naming done in {time.time() - t:.1f}s")
         except Exception as e:
-            print(f"  naming pass failed ({e}); keeping generic labels", file=sys.stderr)
+            log(f"NAMING FAILED: {e}; keeping generic SPEAKER_NN labels")
 
     write_outputs(segments, names, out_dir, args.input.name)
-    print(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
+    log(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
 
     if not args.no_viewer:
         launch_viewer()
@@ -465,7 +505,7 @@ def launch_viewer() -> None:
     with socket.socket() as sock:
         sock.settimeout(0.5)
         if sock.connect_ex((VIEWER_HOST, VIEWER_PORT)) == 0:
-            print(f"Viewer already running at {url}")
+            log(f"Viewer already running at {url}")
             return
 
     script = Path(__file__).resolve().parent / "viewer-server.py"
@@ -478,7 +518,7 @@ def launch_viewer() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    print(f"Started viewer at {url}")
+    log(f"Started viewer at {url}")
 
 
 if __name__ == "__main__":

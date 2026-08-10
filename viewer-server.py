@@ -90,7 +90,7 @@ def render_index() -> bytes:
 # ---- transcription runs -----------------------------------------------------
 
 JOB_LOCK = threading.Lock()
-JOB = {"state": "idle", "command": "", "log": [], "returncode": None, "started": 0.0, "finished": 0.0}
+JOB = {"state": "idle", "command": "", "log": [], "returncode": None, "started": 0.0, "finished": 0.0, "logFile": ""}
 
 
 def job_snapshot() -> dict:
@@ -107,6 +107,7 @@ def job_snapshot() -> dict:
             "returncode": JOB["returncode"],
             "elapsedLabel": format_time(elapsed),
             "logTail": "\n".join(JOB["log"][-25:]),
+            "logFile": JOB["logFile"],
         }
 
 
@@ -130,7 +131,7 @@ def start_run(options: dict) -> tuple[bool, str]:
         except OSError as e:
             return False, str(e)
         JOB.update(state="running", command=" ".join(cmd[2:]), log=[],
-                   returncode=None, started=time.time(), finished=0.0)
+                   returncode=None, started=time.time(), finished=0.0, logFile="")
     threading.Thread(target=watch_run, args=(proc,), daemon=True).start()
     return True, "started"
 
@@ -142,6 +143,8 @@ def watch_run(proc: subprocess.Popen) -> None:
         if not line:
             continue
         with JOB_LOCK:
+            if line.startswith("Run log: "):
+                JOB["logFile"] = line.removeprefix("Run log: ")
             JOB["log"].append(line)
             del JOB["log"][:-400]
     code = proc.wait()
