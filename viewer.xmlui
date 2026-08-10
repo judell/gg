@@ -1,107 +1,121 @@
-<App name="Transcript Viewer" var.search="" var.speaker="__all__">
+<App name="Transcript Viewer" layout="vertical" var.search="" var.speaker="__all__">
   <DataSource id="transcript" url="/api/transcript" />
   <PushSource
     id="runStatus"
     initial="{{ state: 'idle', logTail: '', command: '', elapsedLabel: '' }}"
     subscribe="{window.subscribeRunStatus}" />
-  <APICall
-    id="runJob"
-    url="/api/run"
-    method="post"
-    body="{{ duration: durationBox.value, numSpeakers: speakersBox.value, namingProvider: providerBox.value }}"
-    errorNotificationMessage="Could not start run: {$error.message}" />
   <ChangeListener
     listenTo="{runStatus.value.state}"
     onDidChange="(change) => { if (change.newValue === 'done') transcript.refetch(); }" />
 
   <AppHeader>
-    <Text variant="strong">Transcript Viewer</Text>
+    <Text variant="strong" value="{$pathname === '/transcriber' ? 'Transcriber' : 'Viewer'}" />
     <SpaceFiller />
     <Button label="Reload" icon="refresh" onClick="transcript.refetch()" />
   </AppHeader>
 
-  <VStack padding="$space-4" gap="$space-4">
-    <Card>
-      <VStack gap="$space-2">
-        <H2 value="{transcript.value.source || 'transcript.json'}" />
-        <HStack gap="$space-6" wrapContent="true">
-          <Text value="Duration: {transcript.value.durationLabel}" />
-          <Text value="Turns: {transcript.value.turnCount}" />
-          <Text value="Segments: {transcript.value.segmentCount}" />
-        </HStack>
-      </VStack>
-    </Card>
+  <NavPanel>
+    <NavLink label="Transcriber" to="/transcriber" />
+    <NavLink label="Viewer" to="/" />
+  </NavPanel>
 
-    <Card>
-      <VStack gap="$space-3">
-        <H3 value="Run transcription" />
-        <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
-          <NumberBox id="durationBox" label="Duration (seconds; empty = full file)" />
-          <NumberBox id="speakersBox" label="Speakers (optional)" />
-          <Select id="providerBox" label="Naming" initialValue="anthropic">
-            <Option value="anthropic" label="Anthropic (claude-opus-5)" />
-            <Option value="openai" label="OpenAI (gpt-5.1)" />
-            <Option value="skip" label="Skip naming" />
-          </Select>
-          <Button
-            label="{runStatus.value.state === 'running' ? 'Running...' : 'Run'}"
-            enabled="{runStatus.value.state !== 'running'}"
-            onClick="runJob.execute()" />
-        </HStack>
-        <VStack gap="$space-2" when="{runStatus.value.state !== 'idle'}">
-          <HStack gap="$space-2" verticalAlignment="center">
-            <Badge value="{runStatus.value.state}" />
-            <Text value="{runStatus.value.command}" />
-            <SpaceFiller />
-            <Text value="{runStatus.value.elapsedLabel}" variant="strong" />
-          </HStack>
-          <Text
-            value="{runStatus.value.logTail}"
-            variant="codefence"
-            preserveLinebreaks="true" />
-        </VStack>
-      </VStack>
-    </Card>
-
-    <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
-      <TextBox
-        label="Search"
-        placeholder="Find text"
-        startIcon="search"
-        onDidChange="(value) => search = value || ''" />
-      <Select
-        label="Speaker"
-        data="{transcript.value.speakerOptions || []}"
-        valueField="value"
-        labelField="label"
-        initialValue="__all__"
-        onDidChange="(value) => speaker = value || ''" />
-    </HStack>
-
-    <HStack gap="$space-2" wrapContent="true">
-      <Items data="{transcript.value.speakers || []}">
-        <Badge value="{$item}" variant="pill" />
-      </Items>
-    </HStack>
-
-    <List
-      data="{(transcript.value.turns || []).filter(turn =>
-        (!speaker || speaker === '__all__' || turn.speaker === speaker) &&
-        (!search || (turn.text + ' ' + turn.speaker).toLowerCase().includes(search.toLowerCase()))
-      )}">
-      <property name="itemTemplate">
+  <Pages fallbackPath="/">
+    <Page url="/">
+      <VStack padding="$space-4" gap="$space-4">
         <Card>
           <VStack gap="$space-2">
-            <HStack gap="$space-2" verticalAlignment="center">
-              <Badge value="{$item.speaker}" />
-              <Text value="{$item.time}" variant="strong" />
-              <SpaceFiller />
-              <Text value="{$item.segmentCount + ' segment' + ($item.segmentCount === 1 ? '' : 's')}" />
+            <H2 value="{transcript.value.source || 'transcript.json'}" />
+            <HStack gap="$space-6" wrapContent="true">
+              <Text value="Duration: {transcript.value.durationLabel}" />
+              <Text value="Turns: {transcript.value.turnCount}" />
+              <Text value="Segments: {transcript.value.segmentCount}" />
             </HStack>
-            <Text value="{$item.text}" />
           </VStack>
         </Card>
-      </property>
-    </List>
-  </VStack>
+
+        <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
+          <TextBox
+            label="Search"
+            placeholder="Find text"
+            startIcon="search"
+            onDidChange="(value) => search = value || ''" />
+          <Select
+            label="Speaker"
+            data="{transcript.value.speakerOptions || []}"
+            valueField="value"
+            labelField="label"
+            initialValue="__all__"
+            onDidChange="(value) => speaker = value || ''" />
+        </HStack>
+
+        <HStack gap="$space-2" wrapContent="true">
+          <Items data="{transcript.value.speakers || []}">
+            <Badge value="{$item}" variant="pill" />
+          </Items>
+        </HStack>
+
+        <List
+          data="{(transcript.value.turns || []).filter(turn =>
+            (!speaker || speaker === '__all__' || turn.speaker === speaker) &&
+            (!search || (turn.text + ' ' + turn.speaker).toLowerCase().includes(search.toLowerCase()))
+          )}">
+          <property name="itemTemplate">
+            <Card>
+              <VStack gap="$space-2">
+                <HStack gap="$space-2" verticalAlignment="center">
+                  <Badge value="{$item.speaker}" />
+                  <Text value="{$item.time}" variant="strong" />
+                  <SpaceFiller />
+                  <Text value="{$item.segmentCount + ' segment' + ($item.segmentCount === 1 ? '' : 's')}" />
+                </HStack>
+                <Text value="{$item.text}" />
+              </VStack>
+            </Card>
+          </property>
+        </List>
+      </VStack>
+    </Page>
+
+    <Page url="/transcriber">
+      <APICall
+        id="runJob"
+        url="/api/run"
+        method="post"
+        body="{{ duration: durationBox.value, numSpeakers: speakersBox.value, namingProvider: providerBox.value }}"
+        errorNotificationMessage="Could not start run: {$error.message}" />
+
+      <VStack padding="$space-4" gap="$space-4">
+        <Card>
+          <VStack gap="$space-3">
+            <H3 value="Run transcription" />
+            <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
+              <NumberBox id="durationBox" label="Duration (seconds; empty = full file)" />
+              <NumberBox id="speakersBox" label="Speakers (optional)" />
+              <Select id="providerBox" label="Naming" initialValue="anthropic">
+                <Option value="anthropic" label="Anthropic (claude-opus-5)" />
+                <Option value="openai" label="OpenAI (gpt-5.1)" />
+                <Option value="skip" label="Skip naming" />
+              </Select>
+              <Button
+                label="{runStatus.value.state === 'running' ? 'Running...' : 'Run'}"
+                enabled="{runStatus.value.state !== 'running'}"
+                onClick="runJob.execute()" />
+            </HStack>
+            <VStack gap="$space-2" when="{runStatus.value.state !== 'idle'}">
+              <HStack gap="$space-2" verticalAlignment="center">
+                <Badge value="{runStatus.value.state}" />
+                <Text value="{runStatus.value.command}" />
+                <SpaceFiller />
+                <Text value="{runStatus.value.elapsedLabel}" variant="strong" />
+              </HStack>
+              <Text
+                value="{runStatus.value.logTail}"
+                variant="codefence"
+                preserveLinebreaks="true" />
+            </VStack>
+          </VStack>
+        </Card>
+      </VStack>
+    </Page>
+  </Pages>
 </App>
