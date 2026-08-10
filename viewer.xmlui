@@ -1,5 +1,18 @@
 <App name="Transcript Viewer" var.search="" var.speaker="__all__">
   <DataSource id="transcript" url="/api/transcript" />
+  <PushSource
+    id="runStatus"
+    initial="{{ state: 'idle', logTail: '', command: '', elapsedLabel: '' }}"
+    subscribe="{window.subscribeRunStatus}" />
+  <APICall
+    id="runJob"
+    url="/api/run"
+    method="post"
+    body="{{ duration: durationBox.value, numSpeakers: speakersBox.value }}"
+    errorNotificationMessage="Could not start run: {$error.message}" />
+  <ChangeListener
+    listenTo="{runStatus.value.state}"
+    onDidChange="(change) => { if (change.newValue === 'done') transcript.refetch(); }" />
 
   <AppHeader>
     <Text variant="strong">Transcript Viewer</Text>
@@ -16,6 +29,32 @@
           <Text value="Turns: {transcript.value.turnCount}" />
           <Text value="Segments: {transcript.value.segmentCount}" />
         </HStack>
+      </VStack>
+    </Card>
+
+    <Card>
+      <VStack gap="$space-3">
+        <H3 value="Run transcription" />
+        <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
+          <NumberBox id="durationBox" label="Duration (seconds; empty = full file)" />
+          <NumberBox id="speakersBox" label="Speakers (optional)" />
+          <Button
+            label="{runStatus.value.state === 'running' ? 'Running...' : 'Run'}"
+            enabled="{runStatus.value.state !== 'running'}"
+            onClick="runJob.execute()" />
+        </HStack>
+        <VStack gap="$space-2" when="{runStatus.value.state !== 'idle'}">
+          <HStack gap="$space-2" verticalAlignment="center">
+            <Badge value="{runStatus.value.state}" />
+            <Text value="{runStatus.value.command}" />
+            <SpaceFiller />
+            <Text value="{runStatus.value.elapsedLabel}" variant="strong" />
+          </HStack>
+          <Text
+            value="{runStatus.value.logTail}"
+            variant="codefence"
+            preserveLinebreaks="true" />
+        </VStack>
       </VStack>
     </Card>
 

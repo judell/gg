@@ -397,6 +397,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--start", type=float, default=0.0, help="clip start (seconds)")
     parser.add_argument("--duration", type=float, default=None, help="clip length (seconds)")
+    parser.add_argument("--no-viewer", action="store_true",
+                        help="don't start the transcript viewer after the run")
     args = parser.parse_args()
 
     load_dotenv()
@@ -446,6 +448,37 @@ def main() -> None:
 
     write_outputs(segments, names, out_dir, args.input.name)
     print(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
+
+    if not args.no_viewer:
+        launch_viewer()
+
+
+VIEWER_HOST, VIEWER_PORT = "127.0.0.1", 8787
+
+
+def launch_viewer() -> None:
+    """Start viewer-server.py unless one is already listening; it opens the browser."""
+    import socket
+    import subprocess
+
+    url = f"http://{VIEWER_HOST}:{VIEWER_PORT}/"
+    with socket.socket() as sock:
+        sock.settimeout(0.5)
+        if sock.connect_ex((VIEWER_HOST, VIEWER_PORT)) == 0:
+            print(f"Viewer already running at {url}")
+            return
+
+    script = Path(__file__).resolve().parent / "viewer-server.py"
+    if not script.exists():
+        return
+    subprocess.Popen(
+        [sys.executable, str(script)],
+        cwd=script.parent,
+        start_new_session=True,  # survives this process exiting
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"Started viewer at {url}")
 
 
 if __name__ == "__main__":

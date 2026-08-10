@@ -169,7 +169,13 @@ that, runs start immediately. Outputs land next to the input:
 
 ## View
 
-Start the local transcript viewer:
+The viewer starts automatically at the end of a transcription run: if
+nothing is listening on port 8787, `transcribe.py` spawns
+`viewer-server.py`, which opens your browser on the fresh transcript. If
+the server is already running, the new transcript is live there as soon
+as it's written. Pass `--no-viewer` to skip this for headless runs.
+
+To start the viewer manually (e.g. to revisit an old transcript):
 
 ```sh
 python3 viewer-server.py
@@ -178,7 +184,14 @@ python3 viewer-server.py
 The server opens your browser automatically at `http://127.0.0.1:8787/`.
 It serves a small XMLUI app from `viewer.xmlui`, reads `transcript.json`,
 and provides source/duration summary, speaker chips, speaker filtering,
-search, and a turn-by-turn transcript view. Use `--no-open` if you want to
+search, and a turn-by-turn transcript view.
+
+The viewer can also launch transcription runs: the **Run transcription**
+card takes an optional duration and speaker count, starts
+`uv run transcribe.py gg.mp4` on the server, streams live status and log
+output into the page (server-sent events feeding an XMLUI `PushSource`),
+and reloads the transcript when the run completes. One run at a time;
+a second request while one is running is rejected. Use `--no-open` if you want to
 start the server without opening a browser:
 
 ```sh
@@ -196,5 +209,6 @@ python3 viewer-server.py --no-open
 | `--naming-model MODEL` | Override the naming model (defaults: `gpt-5.1` for OpenAI, `claude-opus-5` for Anthropic) |
 | `--name-candidates NAMES` | Comma-separated likely speaker names to guide naming without forcing mappings |
 | `--output-dir DIR` | Write outputs somewhere other than next to the input |
+| `--no-viewer` | Don't start the transcript viewer after the run |
 | `--start S` | Start the clip at S seconds |
 | `--duration S` | Only process S seconds of audio |
