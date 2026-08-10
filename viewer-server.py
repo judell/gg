@@ -72,7 +72,27 @@ def render_index() -> bytes:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Transcript Viewer</title>
   <script>
-    // Host bridge for the XMLUI PushSource: stream run status over SSE.
+    // Host bridge between this server and the XMLUI app's <PushSource>.
+    //
+    // The server side: GET /api/run/events is a server-sent events (SSE)
+    // endpoint. It holds the HTTP response open and writes a JSON snapshot
+    // of the transcription job ({state, command, logTail, ...}) every time
+    // the status changes -- no client polling.
+    //
+    // The browser side: EventSource is the built-in SSE client. Each
+    // server write fires onmessage with the JSON payload as text.
+    //
+    // The XMLUI side: viewer.xmlui declares
+    //   <PushSource id="runStatus" subscribe="{window.subscribeRunStatus}">
+    // On mount, XMLUI calls subscribe(emit) exactly once, handing us the
+    // emit callback. Every emit(value) below becomes a reactive update:
+    // any binding that reads runStatus.value (the status badge, the log
+    // tail, the Run button's enabled state) re-renders automatically, and
+    // a ChangeListener watching runStatus.value.state refetches the
+    // transcript when a run completes.
+    //
+    // The returned function is the cleanup contract: XMLUI calls it if
+    // the PushSource unmounts, closing the SSE connection.
     window.subscribeRunStatus = (emit) => {
       const es = new EventSource("/api/run/events");
       es.onmessage = (e) => emit(JSON.parse(e.data));
