@@ -50,7 +50,7 @@
 
         <HStack gap="$space-2" wrapContent="true">
           <Items data="{transcript.value.speakers || []}">
-            <Badge value="{$item}" variant="pill" />
+            <Badge value="{$item}" variant="pill" colorMap="{transcript.value.speakerColors}" />
           </Items>
         </HStack>
 
@@ -63,7 +63,7 @@
             <Card>
               <VStack gap="$space-2">
                 <HStack gap="$space-2" verticalAlignment="center">
-                  <Badge value="{$item.speaker}" />
+                  <Badge value="{$item.speaker}" colorMap="{transcript.value.speakerColors}" />
                   <Text value="{$item.time}" variant="strong" />
                   <SpaceFiller />
                   <Text value="{$item.segmentCount + ' segment' + ($item.segmentCount === 1 ? '' : 's')}" />

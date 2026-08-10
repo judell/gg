@@ -17,6 +17,18 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 ALL_SPEAKERS = "__all__"
 
+# Bright categorical palette: (background, label) per speaker, cycled by index.
+SPEAKER_PALETTE = [
+    ("#E5484D", "white"),    # red
+    ("#0090FF", "white"),    # blue
+    ("#30A46C", "white"),    # green
+    ("#F76B15", "white"),    # orange
+    ("#8E4EC6", "white"),    # violet
+    ("#FFC53D", "#3D2E00"),  # amber (dark label for contrast)
+    ("#E93D82", "white"),    # pink
+    ("#12A594", "white"),    # teal
+]
+
 
 def format_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
@@ -50,6 +62,13 @@ def load_transcript(path: Path) -> dict:
                 }
             )
     speakers = sorted({turn["speaker"] for turn in turns})
+    speaker_colors = {
+        speaker: {
+            "background": SPEAKER_PALETTE[i % len(SPEAKER_PALETTE)][0],
+            "label": SPEAKER_PALETTE[i % len(SPEAKER_PALETTE)][1],
+        }
+        for i, speaker in enumerate(speakers)
+    }
     duration = max((segment.get("end", 0) for segment in segments), default=0)
     return {
         "source": data.get("source", path.name),
@@ -58,6 +77,7 @@ def load_transcript(path: Path) -> dict:
         "segmentCount": len(segments),
         "turnCount": len(turns),
         "speakers": speakers,
+        "speakerColors": speaker_colors,
         "speakerOptions": [{"value": ALL_SPEAKERS, "label": "All speakers"}]
         + [{"value": speaker, "label": speaker} for speaker in speakers],
         "turns": turns,
