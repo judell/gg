@@ -108,20 +108,59 @@ def diarize(wav_path: Path, hf_token: str, num_speakers: int | None):
     # pyannote 4.x community pipelines wrap the Annotation; older ones return it directly
     annotation = getattr(result, "speaker_diarization", result)
     return [
-        {"start": turn.start, "end": turn.end, "speaker": speaker}
+        # float() strips numpy scalar types, which json.dumps can't serialize
+        {"start": float(turn.start), "end": float(turn.end), "speaker": speaker}
         for turn, _, speaker in annotation.itertracks(yield_label=True)
     ]
 
 
-def assign_speakers(segments: list[dict], turns: list[dict]) -> None:
-    """Label each transcript segment with the speaker whose turns overlap it most."""
-    for seg in segments:
+def assign_speakers(segments: list[dict], turns: list[dict]) -> list[dict]:
+    """Label each transcript segment with the speaker whose turns overlap it most.
+
+    Returns per-segment alignment evidence: the full overlap contest, the
+    winner's margin, and an ambiguity flag for thin margins or segments a
+    runner-up's turn touches near a boundary (speaker-change suspects)."""
+    evidence = []
+    for i, seg in enumerate(segments):
         overlaps: dict[str, float] = {}
         for turn in turns:
             ov = min(seg["end"], turn["end"]) - max(seg["start"], turn["start"])
             if ov > 0:
                 overlaps[turn["speaker"]] = overlaps.get(turn["speaker"], 0) + ov
-        seg["speaker"] = max(overlaps, key=overlaps.get) if overlaps else "UNKNOWN"
+        if overlaps:
+            winner = max(overlaps, key=overlaps.get)
+            margin = overlaps[winner] / sum(overlaps.values())
+        else:
+            winner, margin = "UNKNOWN", 0.0
+        seg["speaker"] = winner
+
+        boundary = False
+        for turn in turns:
+            if turn["speaker"] == winner:
+                continue
+            ov_start = max(seg["start"], turn["start"])
+            ov_end = min(seg["end"], turn["end"])
+            if ov_end - ov_start > 0 and (
+                ov_start <= seg["start"] + 1.0 or ov_end >= seg["end"] - 1.0
+            ):
+                boundary = True
+                break
+
+        evidence.append({
+            "index": i,
+            "start": round(float(seg["start"]), 2),
+            "end": round(float(seg["end"]), 2),
+            "text": seg["text"][:80],
+            "overlaps": {
+                k: round(float(v), 2)
+                for k, v in sorted(overlaps.items(), key=lambda kv: -kv[1])
+            },
+            "winner": winner,
+            "margin": round(float(margin), 3),
+            # bool() strips numpy bools (json.dumps rejects them)
+            "ambiguous": bool(overlaps and (margin < 0.8 or boundary)),
+        })
+    return evidence
 
 
 def parse_name_candidates(value: str | None) -> list[str]:
@@ -467,7 +506,11 @@ def run_pipeline(args, hf_token: str, out_dir: Path) -> None:
         log(f"  {len(turns)} speaker turns, "
             f"{len({t['speaker'] for t in turns})} speakers in {time.time() - t:.1f}s")
 
-    assign_speakers(segments, turns)
+    alignment = assign_speakers(segments, turns)
+    ambiguous = [e for e in alignment if e["ambiguous"]]
+    log(f"alignment: {len(ambiguous)} of {len(alignment)} segments ambiguous")
+    for e in ambiguous[:5]:
+        log(f"  ambiguous @{e['start']}-{e['end']}s {e['overlaps']} -> {e['winner']}: {e['text'][:60]!r}")
 
     names: dict[str, str] = {}
     if not args.skip_naming:
@@ -491,13 +534,14 @@ def run_pipeline(args, hf_token: str, out_dir: Path) -> None:
     write_outputs(segments, names, out_dir, args.input.name)
     log(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
 
-    archive_run(args, out_dir)
+    archive_run(args, out_dir, alignment, turns)
 
     if not args.no_viewer:
         launch_viewer()
 
 
-def archive_run(args, out_dir: Path) -> None:
+def archive_run(args, out_dir: Path, alignment: list[dict] | None = None,
+                turns: list[dict] | None = None) -> None:
     """Copy this run's outputs plus provenance into archive/run-<timestamp>/."""
     stamp = LOG_PATH.stem
     archive_dir = Path(__file__).resolve().parent / "archive" / stamp
@@ -524,6 +568,11 @@ def archive_run(args, out_dir: Path) -> None:
         "runLog": f"logs/{LOG_PATH.name}",
     }
     (archive_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if alignment is not None:
+        ordered = sorted(alignment, key=lambda e: (not e["ambiguous"], e["index"]))
+        (archive_dir / "alignment.json").write_text(json.dumps(ordered, indent=2))
+    if turns is not None:
+        (archive_dir / "turns.json").write_text(json.dumps(turns, indent=2))
     if LOG_FILE:
         LOG_FILE.flush()
     shutil.copy2(LOG_PATH, archive_dir / "run.log")
