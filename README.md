@@ -200,6 +200,12 @@ timings and counts, and the naming outcome (identified speakers and spelling
 fixes, or a prominent `NAMING FAILED:` line with the reason). When a
 transcript looks wrong, start there.
 
+Every run is also archived to `archive/run-<timestamp>/` (untracked,
+timestamp matching the run's log): copies of `transcript.json` and
+`transcript.md`, a `manifest.json` with provenance — the exact command
+line plus resolved configuration — and a copy of the run log. Later runs
+overwrite the live `transcript.*` files, but never the archive.
+
 ## Options
 
 | Flag | Meaning |

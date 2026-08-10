@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ from dotenv import load_dotenv
 
 
 LOG_FILE = None
+LOG_PATH = None
 
 
 def log(msg: str) -> None:
@@ -425,12 +427,12 @@ def main() -> None:
     out_dir = args.output_dir or args.input.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    global LOG_FILE
+    global LOG_FILE, LOG_PATH
     logs_dir = Path(__file__).resolve().parent / "logs"
     logs_dir.mkdir(exist_ok=True)
-    log_path = logs_dir / time.strftime("run-%Y%m%d-%H%M%S.log")
-    LOG_FILE = log_path.open("w")
-    log(f"Run log: logs/{log_path.name}")
+    LOG_PATH = logs_dir / time.strftime("run-%Y%m%d-%H%M%S.log")
+    LOG_FILE = LOG_PATH.open("w")
+    log(f"Run log: logs/{LOG_PATH.name}")
     log(f"Command: {' '.join(sys.argv)}")
     log(f"Config: model={args.model} "
         f"naming={'skipped' if args.skip_naming else args.naming_provider} "
@@ -489,8 +491,43 @@ def run_pipeline(args, hf_token: str, out_dir: Path) -> None:
     write_outputs(segments, names, out_dir, args.input.name)
     log(f"Wrote {out_dir / 'transcript.json'} and {out_dir / 'transcript.md'}")
 
+    archive_run(args, out_dir)
+
     if not args.no_viewer:
         launch_viewer()
+
+
+def archive_run(args, out_dir: Path) -> None:
+    """Copy this run's outputs plus provenance into archive/run-<timestamp>/."""
+    stamp = LOG_PATH.stem
+    archive_dir = Path(__file__).resolve().parent / "archive" / stamp
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("transcript.json", "transcript.md"):
+        src = out_dir / name
+        if src.exists():
+            shutil.copy2(src, archive_dir / name)
+    manifest = {
+        "command": " ".join(sys.argv),
+        "argv": sys.argv,
+        "config": {
+            "input": str(args.input),
+            "model": args.model,
+            "naming": "skipped" if args.skip_naming else args.naming_provider,
+            "naming_model": (None if args.skip_naming
+                             else args.naming_model
+                             or DEFAULT_NAMING_MODELS[args.naming_provider]),
+            "start": args.start,
+            "duration": args.duration,
+            "num_speakers": args.num_speakers,
+        },
+        "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "runLog": f"logs/{LOG_PATH.name}",
+    }
+    (archive_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if LOG_FILE:
+        LOG_FILE.flush()
+    shutil.copy2(LOG_PATH, archive_dir / "run.log")
+    log(f"Archived to archive/{stamp}/")
 
 
 VIEWER_HOST, VIEWER_PORT = "127.0.0.1", 8787
