@@ -102,35 +102,29 @@ Hugging Face will reject it with a 401. (`.env` is gitignored.)
 
 ### 4. Get and set a naming API key
 
-The speaker-naming pass defaults to OpenAI with `gpt-5.1` for better
-speaker-name inference. To create an OpenAI key:
-
-1. Sign in or create an account at [platform.openai.com](https://platform.openai.com).
-2. Open [API keys](https://platform.openai.com/api-keys).
-3. Click **Create new secret key** and copy it once; OpenAI will not show
-   the full secret again.
-
-Then either export it:
+The speaker-naming pass defaults to Anthropic with `claude-opus-5`. Get a
+Claude API key at [platform.claude.com](https://platform.claude.com), then
+either export it:
 
 ```sh
-export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 or add a second line to `.env`:
 
 ```sh
-OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-To skip this entirely, run
-with `--skip-naming` — you'll get `SPEAKER_00`-style labels instead of names.
+To skip naming entirely, run with `--skip-naming` — you'll get
+`SPEAKER_00`-style labels instead of names.
 
-Anthropic is also supported if you have a Claude API key. Export it or add it
-to `.env`:
+OpenAI is also supported if you have an OpenAI key
+([platform.openai.com](https://platform.openai.com/api-keys)); export
+`OPENAI_API_KEY` or add it to `.env`, then:
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...
-uv run transcribe.py gg.mp4 --duration 180 --naming-provider anthropic
+uv run transcribe.py gg.mp4 --duration 180 --naming-provider openai
 ```
 
 For better speaker naming, pass a known roster and override the naming model
@@ -140,7 +134,7 @@ when needed:
 uv run transcribe.py gg.mp4 --duration 600 --num-speakers 5 \
   --name-candidates "Steve Gillmor, Brent Leary, Keith Teare, Frank Radice, Tina Chase"
 
-uv run transcribe.py gg.mp4 --duration 600 --naming-model gpt-5.1
+uv run transcribe.py gg.mp4 --duration 600 --naming-model claude-opus-5
 ```
 
 ## Run
@@ -213,7 +207,7 @@ transcript looks wrong, start there.
 | `--model` | mlx-whisper model repo (default `mlx-community/whisper-large-v3-turbo`) |
 | `--num-speakers N` | Tell the diarizer exactly how many speakers to find |
 | `--skip-naming` | Skip the naming pass (no OpenAI or Anthropic API key needed) |
-| `--naming-provider openai\|anthropic` | Choose the naming API provider (default `openai`) |
+| `--naming-provider openai\|anthropic` | Choose the naming API provider (default `anthropic`) |
 | `--naming-model MODEL` | Override the naming model (defaults: `gpt-5.1` for OpenAI, `claude-opus-5` for Anthropic) |
 | `--name-candidates NAMES` | Comma-separated likely speaker names to guide naming without forcing mappings |
 | `--output-dir DIR` | Write outputs somewhere other than next to the input |

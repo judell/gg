@@ -393,8 +393,8 @@ def main() -> None:
     parser.add_argument(
         "--naming-provider",
         choices=["openai", "anthropic"],
-        default="openai",
-        help="API provider for speaker naming (default: openai)",
+        default="anthropic",
+        help="API provider for speaker naming (default: anthropic)",
     )
     parser.add_argument(
         "--naming-model",
