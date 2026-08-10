@@ -28,7 +28,6 @@
             <HStack gap="$space-6" wrapContent="true">
               <Text value="Duration: {transcript.value.durationLabel}" />
               <Text value="Turns: {transcript.value.turnCount}" />
-              <Text value="Segments: {transcript.value.segmentCount}" />
             </HStack>
           </VStack>
         </Card>
@@ -65,8 +64,6 @@
                 <HStack gap="$space-2" verticalAlignment="center">
                   <Badge value="{$item.speaker}" colorMap="{transcript.value.speakerColors}" />
                   <Text value="{$item.time}" variant="strong" />
-                  <SpaceFiller />
-                  <Text value="{$item.segmentCount + ' segment' + ($item.segmentCount === 1 ? '' : 's')}" />
                 </HStack>
                 <Text value="{$item.text}" />
               </VStack>
