@@ -4,6 +4,7 @@
 import argparse
 import json
 import mimetypes
+import re
 import shutil
 import subprocess
 import threading
@@ -82,6 +83,58 @@ def load_transcript(path: Path) -> dict:
         + [{"value": speaker, "label": speaker} for speaker in speakers],
         "turns": turns,
     }
+
+
+RUN_ID_RE = re.compile(r"run-\d{8}-\d{6}")
+
+
+def archive_transcript_path(run_id: str) -> Path | None:
+    """Resolve a validated archive run id to its transcript.json, or None."""
+    if not RUN_ID_RE.fullmatch(run_id):
+        return None
+    path = ROOT / "archive" / run_id / "transcript.json"
+    return path if path.exists() else None
+
+
+def list_archive() -> list[dict]:
+    """Archived runs, newest first, labeled with choice-relevant provenance:
+    when it ran, the clip window, the naming provider, and who's in it."""
+    entries = [{"id": "live", "label": "Latest (live)"}]
+    archive_root = ROOT / "archive"
+    if not archive_root.exists():
+        return entries
+    for d in sorted(archive_root.iterdir(), reverse=True):
+        if not d.is_dir() or not RUN_ID_RE.fullmatch(d.name):
+            continue
+        try:
+            manifest = json.loads((d / "manifest.json").read_text())
+            data = json.loads((d / "transcript.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        cfg = manifest.get("config", {})
+        ts = d.name.removeprefix("run-")
+        when = f"{ts[4:6]}-{ts[6:8]} {ts[9:11]}:{ts[11:13]}"
+
+        clip = f"{int(cfg['duration'])}s" if cfg.get("duration") else "full file"
+        if cfg.get("start"):
+            clip = f"from {int(cfg['start'])}s, {clip}"
+
+        naming = cfg.get("naming") or "?"
+        naming_str = "no naming" if naming == "skipped" else f"{naming} naming"
+
+        segments = data.get("segments", [])
+        distinct = {s.get("speaker") for s in segments if s.get("speaker")}
+        named = data.get("speakers", {})
+        if named:
+            firsts = [name.split()[0] for name in sorted(named.values())]
+            who = ", ".join(firsts)
+            if len(named) < len(distinct):
+                who += f" +{len(distinct) - len(named)} unnamed"
+        else:
+            who = f"{len(distinct)} unnamed speaker{'s' if len(distinct) != 1 else ''}"
+
+        entries.append({"id": d.name, "label": f"{when} · {clip} · {naming_str} · {who}"})
+    return entries
 
 
 def render_index() -> bytes:
@@ -267,8 +320,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if path == "/api/run/events":
             self.stream_run_events()
             return
+        if path == "/api/archive":
+            payload = json.dumps(list_archive()).encode()
+            self.send_bytes(payload, "application/json; charset=utf-8", send_body)
+            return
         if path == "/api/transcript":
-            payload = json.dumps(load_transcript(self.transcript_path)).encode()
+            from urllib.parse import parse_qs
+
+            run_id = (parse_qs(parsed.query).get("run") or ["live"])[0]
+            source = self.transcript_path
+            if run_id != "live":
+                source = archive_transcript_path(run_id)
+                if source is None:
+                    self.send_error(404, "unknown archive run")
+                    return
+            payload = json.dumps(load_transcript(source)).encode()
             self.send_bytes(payload, "application/json; charset=utf-8", send_body)
             return
         if path == "/api/raw-transcript":

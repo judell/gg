@@ -1,12 +1,13 @@
-<App name="Transcript Viewer" layout="vertical" var.search="" var.speaker="__all__">
-  <DataSource id="transcript" url="/api/transcript" />
+<App name="Transcript Viewer" layout="vertical" var.search="" var.speaker="__all__" var.selectedRun="live">
+  <DataSource id="transcript" url="{'/api/transcript' + (selectedRun !== 'live' ? '?run=' + selectedRun : '')}" />
+  <DataSource id="archiveList" url="/api/archive" />
   <PushSource
     id="runStatus"
     initial="{{ state: 'idle', logTail: '', command: '', elapsedLabel: '' }}"
     subscribe="{window.subscribeRunStatus}" />
   <ChangeListener
     listenTo="{runStatus.value.state}"
-    onDidChange="(change) => { if (change.newValue === 'done') transcript.refetch(); }" />
+    onDidChange="(change) => { if (change.newValue === 'done') { transcript.refetch(); archiveList.refetch(); } }" />
 
   <AppHeader>
     <Text variant="strong" value="{$pathname === '/transcriber' ? 'Transcriber' : 'Viewer'}" />
@@ -21,16 +22,18 @@
 
   <Pages fallbackPath="/">
     <Page url="/">
-      <VStack padding="$space-4" gap="$space-4">
-        <Card>
-          <VStack gap="$space-2">
-            <H2 value="{transcript.value.source || 'transcript.json'}" />
-            <HStack gap="$space-6" wrapContent="true">
-              <Text value="Duration: {transcript.value.durationLabel}" />
-              <Text value="Turns: {transcript.value.turnCount}" />
-            </HStack>
-          </VStack>
-        </Card>
+      <VStack padding="$space-2" gap="$space-2">
+        <HStack gap="$space-3" verticalAlignment="center" wrapContent="true">
+          <Select
+            id="runPicker"
+            data="{archiveList.value || []}"
+            valueField="id"
+            labelField="label"
+            initialValue="live"
+            width="34rem"
+            onDidChange="(value) => selectedRun = value || 'live'" />
+          <Text value="{transcript.value.durationLabel} · {transcript.value.turnCount} turns" />
+        </HStack>
 
         <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
           <TextBox
