@@ -86,7 +86,15 @@ def transcribe(wav_path: Path, model: str) -> list[dict]:
         hallucination_silence_threshold=2.0,
     )
     return [
-        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+        {
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"].strip(),
+            "words": [
+                {"word": w["word"], "start": float(w["start"]), "end": float(w["end"])}
+                for w in seg.get("words", [])
+            ],
+        }
         for seg in result["segments"]
         if seg["text"].strip()
     ]
@@ -317,6 +325,91 @@ def infer_names_anthropic(
     return parse_naming_response(json.loads(text))
 
 
+def reattribute_words(segments: list[dict], turns: list[dict]) -> tuple[list[dict], int, int]:
+    """Assign speakers word-by-word and regroup into speaker-pure segments.
+
+    Each word takes the speaker of the diarization turn covering its midpoint
+    (largest word-overlap wins where turns overlap); words in diarization gaps
+    inherit the nearest turn. Consecutive same-speaker words regroup into new
+    segments, so text splits exactly at acoustic speaker changes. A lone
+    sub-0.4s word sandwiched between runs of one speaker is absorbed into
+    them (word-timestamp jitter guard).
+
+    Returns (new_segments, original_segments_split, nearest_fallback_words)."""
+    import bisect
+
+    words = []
+    for si, seg in enumerate(segments):
+        seg_words = seg.get("words") or [
+            {"word": seg["text"], "start": seg["start"], "end": seg["end"]}
+        ]
+        for w in seg_words:
+            if w["word"].strip():
+                words.append({"text": w["word"], "start": w["start"],
+                              "end": w["end"], "seg": si})
+    if not words:
+        return [], 0, 0
+
+    fallbacks = 0
+    if not turns:
+        for w in words:
+            w["speaker"] = "UNKNOWN"
+    else:
+        turns_s = sorted(turns, key=lambda t: t["start"])
+        starts = [t["start"] for t in turns_s]
+        max_dur = max(t["end"] - t["start"] for t in turns_s)
+        for w in words:
+            mid = (w["start"] + w["end"]) / 2
+            hi = bisect.bisect_right(starts, mid)
+            best, best_ov = None, 0.0
+            j = hi - 1
+            # only turns starting within max_dur before mid can cover it
+            while j >= 0 and turns_s[j]["start"] >= mid - max_dur:
+                t = turns_s[j]
+                if t["end"] >= mid:
+                    ov = min(w["end"], t["end"]) - max(w["start"], t["start"])
+                    if ov > best_ov:
+                        best, best_ov = t, ov
+                j -= 1
+            if best is None:
+                fallbacks += 1
+                cands = [t for t in (turns_s[hi - 1] if hi else None,
+                                     turns_s[hi] if hi < len(turns_s) else None) if t]
+                best = min(cands, key=lambda t: t["start"] - mid
+                           if t["start"] > mid else mid - t["end"])
+            w["speaker"] = best["speaker"]
+
+        # jitter guard: absorb sandwiched single-word flickers
+        runs: list[list[dict]] = []
+        for w in words:
+            if runs and runs[-1][-1]["speaker"] == w["speaker"]:
+                runs[-1].append(w)
+            else:
+                runs.append([w])
+        for k in range(1, len(runs) - 1):
+            r = runs[k]
+            if (len(r) == 1 and r[0]["end"] - r[0]["start"] < 0.4
+                    and runs[k - 1][-1]["speaker"] == runs[k + 1][0]["speaker"]):
+                r[0]["speaker"] = runs[k - 1][-1]["speaker"]
+
+    new_segments: list[dict] = []
+    for w in words:
+        if new_segments and new_segments[-1]["speaker"] == w["speaker"]:
+            new_segments[-1]["end"] = w["end"]
+            new_segments[-1]["text"] += w["text"]
+        else:
+            new_segments.append({"start": w["start"], "end": w["end"],
+                                 "speaker": w["speaker"], "text": w["text"]})
+    for s in new_segments:
+        s["text"] = " ".join(s["text"].split())
+
+    per_seg: dict[int, set] = {}
+    for w in words:
+        per_seg.setdefault(w["seg"], set()).add(w["speaker"])
+    split = sum(1 for speakers in per_seg.values() if len(speakers) > 1)
+    return new_segments, split, fallbacks
+
+
 def infer_names(
     segments: list[dict], provider: str, model: str, name_candidates: list[str]
 ) -> tuple[dict[str, str], list[dict]]:
@@ -452,6 +545,8 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=None, help="clip length (seconds)")
     parser.add_argument("--no-viewer", action="store_true",
                         help="don't start the transcript viewer after the run")
+    parser.add_argument("--segment-attribution", action="store_true",
+                        help="legacy whole-segment speaker attribution (no word-level splitting)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -512,6 +607,15 @@ def run_pipeline(args, hf_token: str, out_dir: Path) -> None:
     for e in ambiguous[:5]:
         log(f"  ambiguous @{e['start']}-{e['end']}s {e['overlaps']} -> {e['winner']}: {e['text'][:60]!r}")
 
+    if args.segment_attribution:
+        log("attribution: segment-level (legacy)")
+    else:
+        segments, split, fallbacks = reattribute_words(segments, turns)
+        log(f"reattribution: {split} of {len(alignment)} segments split, "
+            f"{fallbacks} words nearest-turn fallback; {len(segments)} speaker-pure segments")
+    for seg in segments:
+        seg.pop("words", None)
+
     names: dict[str, str] = {}
     if not args.skip_naming:
         naming_model = args.naming_model or DEFAULT_NAMING_MODELS[args.naming_provider]
@@ -563,6 +667,7 @@ def archive_run(args, out_dir: Path, alignment: list[dict] | None = None,
             "start": args.start,
             "duration": args.duration,
             "num_speakers": args.num_speakers,
+            "attribution": "segment" if args.segment_attribution else "word",
         },
         "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
         "runLog": f"logs/{LOG_PATH.name}",
