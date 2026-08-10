@@ -1,0 +1,63 @@
+<App name="Transcript Viewer" var.search="" var.speaker="__all__">
+  <DataSource id="transcript" url="/api/transcript" />
+
+  <AppHeader>
+    <Text variant="strong">Transcript Viewer</Text>
+    <SpaceFiller />
+    <Button label="Reload" icon="refresh" onClick="transcript.refetch()" />
+  </AppHeader>
+
+  <VStack padding="$space-4" gap="$space-4">
+    <Card>
+      <VStack gap="$space-2">
+        <H2 value="{transcript.value.source || 'transcript.json'}" />
+        <HStack gap="$space-6" wrapContent="true">
+          <Text value="Duration: {transcript.value.durationLabel}" />
+          <Text value="Turns: {transcript.value.turnCount}" />
+          <Text value="Segments: {transcript.value.segmentCount}" />
+        </HStack>
+      </VStack>
+    </Card>
+
+    <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
+      <TextBox
+        label="Search"
+        placeholder="Find text"
+        startIcon="search"
+        onDidChange="(value) => search = value || ''" />
+      <Select
+        label="Speaker"
+        data="{transcript.value.speakerOptions || []}"
+        valueField="value"
+        labelField="label"
+        initialValue="__all__"
+        onDidChange="(value) => speaker = value || ''" />
+    </HStack>
+
+    <HStack gap="$space-2" wrapContent="true">
+      <Items data="{transcript.value.speakers || []}">
+        <Badge value="{$item}" variant="pill" />
+      </Items>
+    </HStack>
+
+    <List
+      data="{(transcript.value.turns || []).filter(turn =>
+        (!speaker || speaker === '__all__' || turn.speaker === speaker) &&
+        (!search || (turn.text + ' ' + turn.speaker).toLowerCase().includes(search.toLowerCase()))
+      )}">
+      <property name="itemTemplate">
+        <Card>
+          <VStack gap="$space-2">
+            <HStack gap="$space-2" verticalAlignment="center">
+              <Badge value="{$item.speaker}" />
+              <Text value="{$item.time}" variant="strong" />
+              <SpaceFiller />
+              <Text value="{$item.segmentCount + ' segment' + ($item.segmentCount === 1 ? '' : 's')}" />
+            </HStack>
+            <Text value="{$item.text}" />
+          </VStack>
+        </Card>
+      </property>
+    </List>
+  </VStack>
+</App>

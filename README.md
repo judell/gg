@@ -167,6 +167,24 @@ that, runs start immediately. Outputs land next to the input:
 - `transcript.json` — segments with start/end times, speaker labels, and names
 - `transcript.md` — readable transcript with `**Name** [hh:mm:ss]:` turns
 
+## View
+
+Start the local transcript viewer:
+
+```sh
+python3 viewer-server.py
+```
+
+The server opens your browser automatically at `http://127.0.0.1:8787/`.
+It serves a small XMLUI app from `viewer.xmlui`, reads `transcript.json`,
+and provides source/duration summary, speaker chips, speaker filtering,
+search, and a turn-by-turn transcript view. Use `--no-open` if you want to
+start the server without opening a browser:
+
+```sh
+python3 viewer-server.py --no-open
+```
+
 ## Options
 
 | Flag | Meaning |
