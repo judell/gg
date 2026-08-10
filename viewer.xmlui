@@ -8,7 +8,7 @@
     id="runJob"
     url="/api/run"
     method="post"
-    body="{{ duration: durationBox.value, numSpeakers: speakersBox.value }}"
+    body="{{ duration: durationBox.value, numSpeakers: speakersBox.value, namingProvider: providerBox.value }}"
     errorNotificationMessage="Could not start run: {$error.message}" />
   <ChangeListener
     listenTo="{runStatus.value.state}"
@@ -38,6 +38,11 @@
         <HStack gap="$space-3" verticalAlignment="end" wrapContent="true">
           <NumberBox id="durationBox" label="Duration (seconds; empty = full file)" />
           <NumberBox id="speakersBox" label="Speakers (optional)" />
+          <Select id="providerBox" label="Naming" initialValue="anthropic">
+            <Option value="anthropic" label="Anthropic (claude-opus-5)" />
+            <Option value="openai" label="OpenAI (gpt-5.1)" />
+            <Option value="skip" label="Skip naming" />
+          </Select>
           <Button
             label="{runStatus.value.state === 'running' ? 'Running...' : 'Run'}"
             enabled="{runStatus.value.state !== 'running'}"

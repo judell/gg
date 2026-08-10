@@ -109,6 +109,36 @@ def render_index() -> bytes:
 
 # ---- transcription runs -----------------------------------------------------
 
+SERVER_LOG_LOCK = threading.Lock()
+
+
+def server_log(msg: str) -> None:
+    """Journal run-request lifecycle events to logs/viewer-server.log."""
+    logs_dir = ROOT / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    with SERVER_LOG_LOCK:
+        with (logs_dir / "viewer-server.log").open("a") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    print(msg)
+
+
+PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def have_key(name: str) -> bool:
+    """True if the key is set in the server environment or in .env."""
+    import os
+
+    if os.environ.get(name):
+        return True
+    env_file = ROOT / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.strip().startswith(name + "=") and line.split("=", 1)[1].strip():
+                return True
+    return False
+
+
 JOB_LOCK = threading.Lock()
 JOB = {"state": "idle", "command": "", "log": [], "returncode": None, "started": 0.0, "finished": 0.0, "logFile": ""}
 
@@ -132,8 +162,10 @@ def job_snapshot() -> dict:
 
 
 def start_run(options: dict) -> tuple[bool, str]:
+    server_log(f"run requested: {json.dumps(options)}")
     with JOB_LOCK:
         if JOB["state"] == "running":
+            server_log("run rejected: a run is already in progress")
             return False, "a transcription run is already in progress"
         uv = shutil.which("uv") or "/opt/homebrew/bin/uv"
         cmd = [uv, "run", "transcribe.py", "gg.mp4", "--no-viewer"]
@@ -143,15 +175,29 @@ def start_run(options: dict) -> tuple[bool, str]:
             cmd += ["--start", str(float(options["start"]))]
         if options.get("numSpeakers"):
             cmd += ["--num-speakers", str(int(options["numSpeakers"]))]
+        provider = options.get("namingProvider")
+        if provider == "skip":
+            cmd += ["--skip-naming"]
+        elif provider in PROVIDER_KEYS:
+            key = PROVIDER_KEYS[provider]
+            if not have_key(key):
+                server_log(f"run rejected: {key} missing for provider '{provider}'")
+                return False, (f"{key} not found in the server environment or .env; "
+                               "add it or choose another naming option")
+            cmd += ["--naming-provider", provider]
+        elif provider:
+            server_log(f"run option ignored: unknown namingProvider {provider!r}")
         try:
             proc = subprocess.Popen(
                 cmd, cwd=ROOT, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True,
             )
         except OSError as e:
+            server_log(f"run failed to spawn: {e}")
             return False, str(e)
         JOB.update(state="running", command=" ".join(cmd[2:]), log=[],
                    returncode=None, started=time.time(), finished=0.0, logFile="")
+    server_log(f"run started: {' '.join(cmd)}")
     threading.Thread(target=watch_run, args=(proc,), daemon=True).start()
     return True, "started"
 
@@ -172,6 +218,8 @@ def watch_run(proc: subprocess.Popen) -> None:
         JOB["state"] = "done" if code == 0 else "failed"
         JOB["returncode"] = code
         JOB["finished"] = time.time()
+        state, log_file = JOB["state"], JOB["logFile"]
+    server_log(f"run finished: state={state} returncode={code} logFile={log_file}")
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
